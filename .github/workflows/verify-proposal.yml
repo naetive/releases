@@ -7,9 +7,11 @@ name: Verify proposal
 # when every package's version and sha256 match. Make "Rebuilt from source"
 # a required check on main.
 #
-# Needs, in the environment "platform-read": the secrets PLATFORM_DEPLOY_KEY and
-# CONSOLE_DEPLOY_KEY, read-only deploy keys on naetive/platform and
-# naetive/console (b2, b3).
+# Needs, in the environment "platform-read" (main only): the variable
+# READER_APP_ID and the secret READER_APP_PRIVATE_KEY of the "Naetive release
+# reader" App (Contents read-only, installed on naetive/platform and
+# naetive/console only). Its short-lived tokens exist only in the fetch job
+# (b2, b3; the org cannot use deploy keys).
 
 on:
   pull_request_target:
@@ -55,19 +57,43 @@ jobs:
     outputs:
       console_commit: ${{ steps.console.outputs.commit }}
     steps:
-      - name: Exactly that commit, on platform main; the key is gone before anything is built
+      # The reader's whole installation, only to prove it reaches exactly
+      # naetive/platform and naetive/console (r11); nothing is read with it.
+      - name: A token to list the reader's repositories
+        id: scope
+        uses: actions/create-github-app-token@5d869da34e18e7287c1daad50e0b8ea0f506ce69 # v1.11.0
+        with:
+          app-id: ${{ vars.READER_APP_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+          owner: naetive
+      - name: The reader reaches naetive/platform and naetive/console, and nothing else
+        env:
+          GH_TOKEN: ${{ steps.scope.outputs.token }}
+        run: |
+          set -euo pipefail
+          got="$(curl -fsS --proto '=https' -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' 'https://api.github.com/installation/repositories?per_page=100' | jq -r '.repositories[].full_name' | sort | paste -sd, -)"
+          [[ "$got" == "naetive/console,naetive/platform" ]] || { echo "::error::the reader App reaches $got, not exactly naetive/platform and naetive/console"; exit 1; }
+      - name: A read-only token for naetive/platform and naetive/console
+        id: reader
+        uses: actions/create-github-app-token@5d869da34e18e7287c1daad50e0b8ea0f506ce69 # v1.11.0
+        with:
+          app-id: ${{ vars.READER_APP_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+          owner: naetive
+          repositories: platform,console
+      - name: Exactly that commit, on platform main; the token never leaves this job
         env:
           COMMIT: ${{ needs.read.outputs.commit }}
-          DEPLOY_KEY: ${{ secrets.PLATFORM_DEPLOY_KEY }}
+          TOKEN: ${{ steps.reader.outputs.token }}
         run: |
           set -euo pipefail
           [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad commit"; exit 1; }
-          key="$RUNNER_TEMP/platform-key"; umask 077; printf '%s\n' "$DEPLOY_KEY" > "$key"; unset DEPLOY_KEY
-          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts"
-          ssh-keyscan -t ed25519 github.com > "$RUNNER_TEMP/known_hosts" 2>/dev/null
-          ssh-keygen -lf "$RUNNER_TEMP/known_hosts" | grep -q 'SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU' || { echo "::error::github.com host key is not GitHub's"; exit 1; }
+          # The token as an HTTP header through git's environment: never in a URL,
+          # an argument or a file on disk.
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" GIT_TERMINAL_PROMPT=0
+          unset TOKEN
           git init -q src && cd src
-          git remote add origin git@github.com:naetive/platform.git
+          git remote add origin https://github.com/naetive/platform.git
           # main's full commit history, no file contents; a commit on main is then here.
           git fetch -q --filter=blob:none origin main
           git cat-file -e "$COMMIT^{commit}" 2>/dev/null && git merge-base --is-ancestor "$COMMIT" origin/main || { echo "::error::$COMMIT is not on platform main"; exit 1; }
@@ -76,26 +102,26 @@ jobs:
           git archive --format=tar -o "$RUNNER_TEMP/source.tar" "$COMMIT" -- scripts packages/mcp-core client ':!scripts/console-dist'
           # The console commit this platform commit's console was built from, as data.
           git show "$COMMIT:scripts/console-dist/memeri-console.version.json" > "$RUNNER_TEMP/console-meta.json" 2>/dev/null || echo '{}' > "$RUNNER_TEMP/console-meta.json"
-          cd .. && rm -rf src "$key"
+          cd .. && rm -rf src
       - name: The console's commit, on naetive/console main, when the proposal has a console (b3)
         id: console
         env:
           PIECES: ${{ needs.read.outputs.pieces }}
-          DEPLOY_KEY: ${{ secrets.CONSOLE_DEPLOY_KEY }}
+          TOKEN: ${{ steps.reader.outputs.token }}
         run: |
           set -euo pipefail
-          if ! grep -q '^console=' <<< "$PIECES"; then unset DEPLOY_KEY; exit 0; fi
+          if ! grep -q '^console=' <<< "$PIECES"; then exit 0; fi
           [[ "$(jq -r '.source.repo // ""' "$RUNNER_TEMP/console-meta.json")" == naetive/console ]] || { echo "::error::the console was not built from naetive/console"; exit 1; }
           CCOMMIT="$(jq -r '.source.commit // ""' "$RUNNER_TEMP/console-meta.json")"
           [[ "$CCOMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the console manifest names no commit"; exit 1; }
-          key="$RUNNER_TEMP/console-key"; umask 077; printf '%s\n' "$DEPLOY_KEY" > "$key"; unset DEPLOY_KEY
-          export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$RUNNER_TEMP/known_hosts"
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" GIT_TERMINAL_PROMPT=0
+          unset TOKEN
           git init -q csrc && cd csrc
-          git remote add origin git@github.com:naetive/console.git
+          git remote add origin https://github.com/naetive/console.git
           git fetch -q --filter=blob:none origin main
           git cat-file -e "$CCOMMIT^{commit}" 2>/dev/null && git merge-base --is-ancestor "$CCOMMIT" origin/main || { echo "::error::$CCOMMIT is not on naetive/console main"; exit 1; }
           git archive --format=tar -o "$RUNNER_TEMP/console-source.tar" "$CCOMMIT"
-          cd .. && rm -rf csrc "$key"
+          cd .. && rm -rf csrc
           tar -rf "$RUNNER_TEMP/source.tar" -C "$RUNNER_TEMP" console-source.tar
           echo "commit=$CCOMMIT" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
