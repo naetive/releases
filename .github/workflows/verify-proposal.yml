@@ -33,6 +33,7 @@ jobs:
     outputs:
       commit: ${{ steps.read.outputs.commit }}
       pieces: ${{ steps.read.outputs.pieces }}
+      installers: ${{ steps.read.outputs.installers }}
     steps:
       # releases main, not the pull request (the default for pull_request_target).
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -47,6 +48,7 @@ jobs:
           REPO: ${{ github.repository }}
           PR: ${{ github.event.pull_request.number }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node .github/verify/read-proposal.mjs
 
   fetch:
@@ -174,6 +176,8 @@ jobs:
               ( cd platform && "${CLEAN[@]}" OUT_DIR_OVERRIDE="$out" "$dateenv=${version:0:10}" bash "scripts/$script" >/dev/null )
             fi
           done <<< "$PIECES"
+          # The installers at that commit, for the manifest's sha256 (doc #320 r8, r9).
+          mkdir built/installers && cp platform/scripts/install.sh platform/scripts/install.ps1 built/installers/
       - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: built
@@ -203,10 +207,20 @@ jobs:
       - name: Each package is exactly what the commit builds
         env:
           PIECES: ${{ needs.read.outputs.pieces }}
+          INSTALLERS: ${{ needs.read.outputs.installers }}
         run: |
           set -euo pipefail
           [[ -n "$PIECES" ]] || { echo "::error::no pieces"; exit 1; }
           failed=0
+          # The manifest's installers are exactly the platform commit's (r8, r9).
+          if [[ -n "$INSTALLERS" ]]; then
+            while IFS='=' read -r name sha; do
+              [[ "$name" =~ ^install\.(sh|ps1)$ && "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::bad installer line"; exit 1; }
+              [[ -f "built/installers/$name" ]] || { echo "::error::$name: not in the build"; failed=1; continue; }
+              got="$(sha256sum "built/installers/$name" | cut -d' ' -f1)"
+              if [[ "$got" == "$sha" ]]; then echo "✓ $name: the commit's installer, sha256 matches"; else echo "::error::$name: the commit's installer has sha256 $got, not $sha"; failed=1; fi
+            done <<< "$INSTALLERS"
+          fi
           while IFS='=' read -r kind version sha; do
             [[ "$kind" =~ ^(tunnel|cli|console)$ && "$version" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{8}$ && "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::bad piece line"; exit 1; }
             case "$kind" in
