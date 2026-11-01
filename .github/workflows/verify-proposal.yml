@@ -58,6 +58,7 @@ jobs:
     environment: platform-read
     outputs:
       console_commit: ${{ steps.console.outputs.commit }}
+      console_bundle: ${{ steps.console.outputs.bundle }}
     steps:
       # The reader's whole installation, only to prove it reaches exactly
       # naetive/platform and naetive/console (r11); nothing is read with it.
@@ -100,10 +101,18 @@ jobs:
           git fetch -q --filter=blob:none origin main
           git cat-file -e "$COMMIT^{commit}" 2>/dev/null && git merge-base --is-ancestor "$COMMIT" origin/main || { echo "::error::$COMMIT is not on platform main"; exit 1; }
           # Never the committed packages: a match must come from building (Security v2).
-          # The client too: the console's terminal bundle is built from it.
-          git archive --format=tar -o "$RUNNER_TEMP/source.tar" "$COMMIT" -- scripts packages/mcp-core client ':!scripts/console-dist'
+          # The client too: the console's terminal bundle is built from it. And the
+          # one manifest schema, which the command package carries.
+          git archive --format=tar -o "$RUNNER_TEMP/source.tar" "$COMMIT" -- scripts packages/mcp-core client src/services/releaseManifest.js ':!scripts/console-dist'
           # The console commit this platform commit's console was built from, as data.
           git show "$COMMIT:scripts/console-dist/memeri-console.version.json" > "$RUNNER_TEMP/console-meta.json" 2>/dev/null || echo '{}' > "$RUNNER_TEMP/console-meta.json"
+          # The console's terminal bundle comes from the platform commit its manifest
+          # names (finding 7335bb06): an ancestor of the proposal's commit, so on main.
+          BCOMMIT="$(jq -r '.bundle.platform_commit // ""' "$RUNNER_TEMP/console-meta.json")"
+          if [[ "$BCOMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            git cat-file -e "$BCOMMIT^{commit}" 2>/dev/null && git merge-base --is-ancestor "$BCOMMIT" "$COMMIT" || { echo "::error::the console's bundle commit $BCOMMIT is not on platform main before $COMMIT"; exit 1; }
+            git archive --format=tar -o "$RUNNER_TEMP/bundle-client.tar" "$BCOMMIT" -- client
+          fi
           cd .. && rm -rf src
       - name: The console's commit, on naetive/console main, when the proposal has a console (b3)
         id: console
@@ -116,6 +125,8 @@ jobs:
           [[ "$(jq -r '.source.repo // ""' "$RUNNER_TEMP/console-meta.json")" == naetive/console ]] || { echo "::error::the console was not built from naetive/console"; exit 1; }
           CCOMMIT="$(jq -r '.source.commit // ""' "$RUNNER_TEMP/console-meta.json")"
           [[ "$CCOMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the console manifest names no commit"; exit 1; }
+          BCOMMIT="$(jq -r '.bundle.platform_commit // ""' "$RUNNER_TEMP/console-meta.json")"
+          [[ "$BCOMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the console manifest names no platform commit for its terminal bundle"; exit 1; }
           export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" GIT_TERMINAL_PROMPT=0
           unset TOKEN
           git init -q csrc && cd csrc
@@ -125,7 +136,10 @@ jobs:
           git archive --format=tar -o "$RUNNER_TEMP/console-source.tar" "$CCOMMIT"
           cd .. && rm -rf csrc
           tar -rf "$RUNNER_TEMP/source.tar" -C "$RUNNER_TEMP" console-source.tar
+          [[ -f "$RUNNER_TEMP/bundle-client.tar" ]] || { echo "::error::the console's bundle client was not fetched"; exit 1; }
+          tar -rf "$RUNNER_TEMP/source.tar" -C "$RUNNER_TEMP" bundle-client.tar
           echo "commit=$CCOMMIT" >> "$GITHUB_OUTPUT"
+          echo "bundle=$BCOMMIT" >> "$GITHUB_OUTPUT"
       - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: platform-source
@@ -151,6 +165,7 @@ jobs:
         env:
           PIECES: ${{ needs.read.outputs.pieces }}
           CONSOLE_COMMIT: ${{ needs.fetch.outputs.console_commit }}
+          CONSOLE_BUNDLE: ${{ needs.fetch.outputs.console_bundle }}
         run: |
           set -euo pipefail
           mkdir platform && tar -xf "$RUNNER_TEMP/source.tar" -C platform
@@ -169,9 +184,12 @@ jobs:
             if [[ "$kind" == console ]]; then
               # The console's files from its commit, and the client's own locked dependencies for its bundle.
               [[ "$CONSOLE_COMMIT" =~ ^[0-9a-f]{40}$ && -f platform/console-source.tar ]] || { echo "::error::console: no console source was fetched"; exit 1; }
+              [[ "$CONSOLE_BUNDLE" =~ ^[0-9a-f]{40}$ && -f platform/bundle-client.tar ]] || { echo "::error::console: no bundle client was fetched"; exit 1; }
               rm -rf console-src && mkdir console-src && tar -xf platform/console-source.tar -C console-src
+              # The client the bundle was built from, in place of the proposal's own.
+              rm -rf platform/client && tar -xf platform/bundle-client.tar -C platform
               ( cd platform/client && "${CLEAN[@]}" npm ci --no-audit --no-fund >/dev/null )
-              ( cd platform && "${CLEAN[@]}" OUT_DIR_OVERRIDE="$out" CONSOLE_SRC_ARCHIVE="$PWD/../console-src" CONSOLE_COMMIT="$CONSOLE_COMMIT" "$dateenv=${version:0:10}" bash "scripts/$script" >/dev/null )
+              ( cd platform && "${CLEAN[@]}" OUT_DIR_OVERRIDE="$out" CONSOLE_SRC_ARCHIVE="$PWD/../console-src" CONSOLE_COMMIT="$CONSOLE_COMMIT" CONSOLE_CLIENT_COMMIT="$CONSOLE_BUNDLE" "$dateenv=${version:0:10}" bash "scripts/$script" >/dev/null )
             else
               ( cd platform && "${CLEAN[@]}" OUT_DIR_OVERRIDE="$out" "$dateenv=${version:0:10}" bash "scripts/$script" >/dev/null )
             fi
