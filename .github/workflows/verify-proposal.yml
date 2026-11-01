@@ -1,0 +1,227 @@
+name: Verify proposal
+
+# The check the founder relies on before tapping Merge (doc #320 r3; Security
+# b1, b2). It lives on naetive/releases, where only a founder merge can change
+# it, and runs from releases main (pull_request_target), never from the pull
+# request. It rebuilds the platform commit the proposal names and passes only
+# when every package's version and sha256 match. Make "Rebuilt from source"
+# a required check on main.
+#
+# Needs, in the environment "platform-read" (main only): the variable
+# READER_APP_ID and the secret READER_APP_PRIVATE_KEY of the "Naetive release
+# reader" App (Contents read-only, installed on naetive/platform and
+# naetive/console only). Its short-lived tokens exist only in the fetch job
+# (b2, b3; the org cannot use deploy keys).
+
+on:
+  pull_request_target:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: verify-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  read:
+    name: Read the proposal
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.read.outputs.commit }}
+      pieces: ${{ steps.read.outputs.pieces }}
+    steps:
+      # releases main, not the pull request (the default for pull_request_target).
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '22.11.0'
+      - id: read
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node .github/verify/read-proposal.mjs
+
+  fetch:
+    name: Fetch the platform commit
+    needs: read
+    runs-on: ubuntu-24.04
+    environment: platform-read
+    outputs:
+      console_commit: ${{ steps.console.outputs.commit }}
+    steps:
+      # The reader's whole installation, only to prove it reaches exactly
+      # naetive/platform and naetive/console (r11); nothing is read with it.
+      - name: A token to list the reader's repositories
+        id: scope
+        uses: actions/create-github-app-token@5d869da34e18e7287c1daad50e0b8ea0f506ce69 # v1.11.0
+        with:
+          app-id: ${{ vars.READER_APP_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+          owner: naetive
+      - name: The reader reaches naetive/platform and naetive/console, and nothing else
+        env:
+          GH_TOKEN: ${{ steps.scope.outputs.token }}
+        run: |
+          set -euo pipefail
+          got="$(curl -fsS --proto '=https' -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' 'https://api.github.com/installation/repositories?per_page=100' | jq -r '.repositories[].full_name' | sort | paste -sd, -)"
+          [[ "$got" == "naetive/console,naetive/platform" ]] || { echo "::error::the reader App reaches $got, not exactly naetive/platform and naetive/console"; exit 1; }
+      - name: A read-only token for naetive/platform and naetive/console
+        id: reader
+        uses: actions/create-github-app-token@5d869da34e18e7287c1daad50e0b8ea0f506ce69 # v1.11.0
+        with:
+          app-id: ${{ vars.READER_APP_ID }}
+          private-key: ${{ secrets.READER_APP_PRIVATE_KEY }}
+          owner: naetive
+          repositories: platform,console
+      - name: Exactly that commit, on platform main; the token never leaves this job
+        env:
+          COMMIT: ${{ needs.read.outputs.commit }}
+          TOKEN: ${{ steps.reader.outputs.token }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad commit"; exit 1; }
+          # The token as an HTTP header through git's environment: never in a URL,
+          # an argument or a file on disk.
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" GIT_TERMINAL_PROMPT=0
+          unset TOKEN
+          git init -q src && cd src
+          git remote add origin https://github.com/naetive/platform.git
+          # main's full commit history, no file contents; a commit on main is then here.
+          git fetch -q --filter=blob:none origin main
+          git cat-file -e "$COMMIT^{commit}" 2>/dev/null && git merge-base --is-ancestor "$COMMIT" origin/main || { echo "::error::$COMMIT is not on platform main"; exit 1; }
+          # Never the committed packages: a match must come from building (Security v2).
+          # The client too: the console's terminal bundle is built from it.
+          git archive --format=tar -o "$RUNNER_TEMP/source.tar" "$COMMIT" -- scripts packages/mcp-core client ':!scripts/console-dist'
+          # The console commit this platform commit's console was built from, as data.
+          git show "$COMMIT:scripts/console-dist/memeri-console.version.json" > "$RUNNER_TEMP/console-meta.json" 2>/dev/null || echo '{}' > "$RUNNER_TEMP/console-meta.json"
+          cd .. && rm -rf src
+      - name: The console's commit, on naetive/console main, when the proposal has a console (b3)
+        id: console
+        env:
+          PIECES: ${{ needs.read.outputs.pieces }}
+          TOKEN: ${{ steps.reader.outputs.token }}
+        run: |
+          set -euo pipefail
+          if ! grep -q '^console=' <<< "$PIECES"; then exit 0; fi
+          [[ "$(jq -r '.source.repo // ""' "$RUNNER_TEMP/console-meta.json")" == naetive/console ]] || { echo "::error::the console was not built from naetive/console"; exit 1; }
+          CCOMMIT="$(jq -r '.source.commit // ""' "$RUNNER_TEMP/console-meta.json")"
+          [[ "$CCOMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::the console manifest names no commit"; exit 1; }
+          export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=http.https://github.com/.extraheader GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$TOKEN" | base64 -w0)" GIT_TERMINAL_PROMPT=0
+          unset TOKEN
+          git init -q csrc && cd csrc
+          git remote add origin https://github.com/naetive/console.git
+          git fetch -q --filter=blob:none origin main
+          git cat-file -e "$CCOMMIT^{commit}" 2>/dev/null && git merge-base --is-ancestor "$CCOMMIT" origin/main || { echo "::error::$CCOMMIT is not on naetive/console main"; exit 1; }
+          git archive --format=tar -o "$RUNNER_TEMP/console-source.tar" "$CCOMMIT"
+          cd .. && rm -rf csrc
+          tar -rf "$RUNNER_TEMP/source.tar" -C "$RUNNER_TEMP" console-source.tar
+          echo "commit=$CCOMMIT" >> "$GITHUB_OUTPUT"
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: platform-source
+          path: ${{ runner.temp }}/source.tar
+          retention-days: 1
+
+  build:
+    name: Build the packages
+    needs: [read, fetch]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: platform-source
+          path: ${{ runner.temp }}
+      - uses: actions/setup-node@39370e3970a6d050c480ffad4ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '22.11.0'
+      # Only builds (no secrets): the platform's build scripts, and for a console
+      # the client's locked dependencies, whose install scripts run here. So
+      # nothing here decides; the verdict is the next job, on a fresh runner (c1).
+      - name: Build each proposed piece from the commit
+        env:
+          PIECES: ${{ needs.read.outputs.pieces }}
+          CONSOLE_COMMIT: ${{ needs.fetch.outputs.console_commit }}
+        run: |
+          set -euo pipefail
+          mkdir platform && tar -xf "$RUNNER_TEMP/source.tar" -C platform
+          [[ ! -e platform/scripts/console-dist ]] || { echo "::error::the source holds packages"; exit 1; }
+          [[ -n "$PIECES" ]] || { echo "::error::no pieces"; exit 1; }
+          mkdir built
+          while IFS='=' read -r kind version sha; do
+            [[ "$kind" =~ ^(tunnel|cli|console)$ && "$version" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{8}$ && "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::bad piece line"; exit 1; }
+            case "$kind" in
+              tunnel)  script=build-tunnel-tarball.sh;  dateenv=TUNNEL_BUILD_DATE ;;
+              cli)     script=build-cli-tarball.sh;     dateenv=CLI_BUILD_DATE ;;
+              console) script=build-console-tarball.sh; dateenv=CONSOLE_BUILD_DATE ;;
+            esac
+            out="$PWD/built/$kind"; mkdir "$out"
+            CLEAN=(env -i PATH="/usr/local/bin:/usr/bin:/bin:$(dirname "$(command -v node)")" HOME="$RUNNER_TEMP" LC_ALL=C TZ=UTC)
+            if [[ "$kind" == console ]]; then
+              # The console's files from its commit, and the client's own locked dependencies for its bundle.
+              [[ "$CONSOLE_COMMIT" =~ ^[0-9a-f]{40}$ && -f platform/console-source.tar ]] || { echo "::error::console: no console source was fetched"; exit 1; }
+              rm -rf console-src && mkdir console-src && tar -xf platform/console-source.tar -C console-src
+              ( cd platform/client && "${CLEAN[@]}" npm ci --no-audit --no-fund >/dev/null )
+              ( cd platform && "${CLEAN[@]}" OUT_DIR_OVERRIDE="$out" CONSOLE_SRC_ARCHIVE="$PWD/../console-src" CONSOLE_COMMIT="$CONSOLE_COMMIT" "$dateenv=${version:0:10}" bash "scripts/$script" >/dev/null )
+            else
+              ( cd platform && "${CLEAN[@]}" OUT_DIR_OVERRIDE="$out" "$dateenv=${version:0:10}" bash "scripts/$script" >/dev/null )
+            fi
+          done <<< "$PIECES"
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: built
+          path: built
+          retention-days: 1
+
+  verdict:
+    name: Rebuilt from source
+    needs: [read, fetch, build]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      # A skipped or failed job before this one is a failure here, never a pass.
+      - name: Every job before passed
+        env:
+          READ: ${{ needs.read.result }}
+          FETCH: ${{ needs.fetch.result }}
+          BUILD: ${{ needs.build.result }}
+        run: '[[ "$READ" == success && "$FETCH" == success && "$BUILD" == success ]] || { echo "::error::read: $READ, fetch: $FETCH, build: $BUILD"; exit 1; }'
+      # Only the built packages: no npm, no checkout, no secrets on this runner.
+      - uses: actions/download-artifact@fa0a91b85d4f404e444e00e005971372dc801d16 # v4.1.8
+        with:
+          name: built
+          path: built
+      # The verdict is this file's own shell, owned by naetive/releases (Security
+      # v1, c1): the sha256 and the version are read and compared here.
+      - name: Each package is exactly what the commit builds
+        env:
+          PIECES: ${{ needs.read.outputs.pieces }}
+        run: |
+          set -euo pipefail
+          [[ -n "$PIECES" ]] || { echo "::error::no pieces"; exit 1; }
+          failed=0
+          while IFS='=' read -r kind version sha; do
+            [[ "$kind" =~ ^(tunnel|cli|console)$ && "$version" =~ ^[0-9]{4}\.[0-9]{2}\.[0-9]{2}-[0-9a-f]{8}$ && "$sha" =~ ^[0-9a-f]{64}$ ]] || { echo "::error::bad piece line"; exit 1; }
+            case "$kind" in
+              tunnel)  tarball=naetive-tunnel.tar.gz; meta=naetive-tunnel.version.json ;;
+              cli)     tarball=naetive-cli.tar.gz;    meta=naetive-cli.version.json ;;
+              console) tarball=memeri-console.tar.gz; meta=memeri-console.version.json ;;
+            esac
+            out="built/$kind"
+            [[ -f "$out/$tarball" && -f "$out/$meta" ]] || { echo "::error::$kind: nothing was built"; failed=1; continue; }
+            got_sha="$(sha256sum "$out/$tarball" | cut -d' ' -f1)"
+            got_version="$(jq -r '.version' "$out/$meta")"
+            if [[ "$got_version" == "$version" && "$got_sha" == "$sha" ]]; then
+              echo "✓ $kind $version: rebuilt from source, sha256 matches"
+            else
+              echo "::error::$kind: this commit builds $got_version with sha256 $got_sha, not $version with $sha"; failed=1
+            fi
+          done <<< "$PIECES"
+          exit "$failed"
