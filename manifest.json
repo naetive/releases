@@ -1,12 +1,12 @@
 {
   "v": 1,
-  "serial": 8,
+  "serial": 9,
   "rollback": false,
-  "platform_commit": "351564df2237add30e362348cf4521252c416d05",
+  "platform_commit": "4453af1a65a39fc5330c55e59a4bef69827c9d7f",
   "pieces": {
     "tunnel": {
-      "version": "2026.11.04-1c91b5e5",
-      "sha256": "9174da90106dc83780a5d4bc3c01962c2d46e4b7ea98aabc35661d5d3beb1fdb"
+      "version": "2026.11.05-25c1f588",
+      "sha256": "476893f8883a615488fb7636f2612fe23b79cb0b3f82eac1bba5cca1059aa561"
     },
     "cli": {
       "version": "2026.11.04-a6773837",
