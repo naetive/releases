@@ -1,16 +1,16 @@
 {
   "v": 1,
-  "serial": 21,
+  "serial": 22,
   "rollback": false,
-  "platform_commit": "36c1e58769051a796567784058c2021d9551bd41",
+  "platform_commit": "be930229946833f0eab9a5846c3dc284f133dcec",
   "pieces": {
     "tunnel": {
-      "version": "2026.11.11-4a48ac0e",
-      "sha256": "4038f86c29922ef78f18677a651fca26c53b7a6dde52f09189def226bb554d91"
+      "version": "2026.11.13-d46595a0",
+      "sha256": "12d92eb0fc3b96f9ffce7ed1c70f78faf6fbf3a7aa44649cc4bd579fd6981a09"
     },
     "cli": {
-      "version": "2026.11.12-070c73cf",
-      "sha256": "61218e0b7c6e5e00ddd19c6c3ba8f1ccd4bef3e87339745ea38b65ed4211833b"
+      "version": "2026.11.13-8d3f4bcc",
+      "sha256": "72f431ba769d0fc183c946b0e25f19141ee381e3aba71627a00897b706f556f8"
     },
     "console": {
       "version": "2026.11.11-ff8becfb",
