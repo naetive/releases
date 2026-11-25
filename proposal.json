@@ -1,15 +1,11 @@
 {
   "v": 1,
-  "platform_commit": "4c2fd81e93074da63c38948e2546e4de4fdbf3de",
-  "review_thread": "417f5f6e-0cc3-442e-9021-b60030ae99e6",
+  "platform_commit": "de92e8c10cc15db0040550e0807a17a47ba9cc23",
+  "review_thread": "87119f01-7ca1-4b2f-b2d5-19c61d1848b5",
   "pieces": {
     "cli": {
-      "version": "2026.11.23-ad90416a",
-      "sha256": "8637573f17a3335300e0ff512d11b2e207aedcc628771203a85cee9b9a7bf7ac"
-    },
-    "console": {
-      "version": "2026.11.23-470c0364",
-      "sha256": "1eba2b0229252ec8eb90e0dde133278ba12033b358866a2b707926188b5a9948"
+      "version": "2026.11.25-3982bb74",
+      "sha256": "b17878bed2cee8f99dee72c46ed86be2784d0fb87bed3e18f90b8d5efb360057"
     }
   }
 }
