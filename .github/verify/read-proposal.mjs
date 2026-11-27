@@ -96,7 +96,7 @@ export async function check(files, read, readBase = async () => null) {
     }
     installers = INSTALLERS.map((k) => `${k}=${manifest.installers[k].sha256}`);
   }
-  return { commit: proposal.platform_commit, pieces: [...kinds].sort().map((k) => `${k}=${proposal.pieces[k].version}=${proposal.pieces[k].sha256}`), installers };
+  return { commit: proposal.platform_commit, thread: proposal.review_thread, pieces: [...kinds].sort().map((k) => `${k}=${proposal.pieces[k].version}=${proposal.pieces[k].sha256}`), installers };
 }
 
 async function gh(url, accept = 'application/vnd.github+json', { missingOk = false } = {}) {
@@ -119,6 +119,10 @@ if (process.argv[1] && import.meta.url.endsWith(process.argv[1].split('/').pop()
     (name) => gh(`/repos/${REPO}/contents/${encodeURIComponent(name)}?ref=${HEAD_SHA}`, 'application/vnd.github.raw'),
     (name) => gh(`/repos/${REPO}/contents/${encodeURIComponent(name)}?ref=${BASE_SHA}`, 'application/vnd.github.raw', { missingOk: true }));
   if (r.error) fail(r.error);
-  fs.appendFileSync(process.env.GITHUB_OUTPUT, `commit=${r.commit}\npieces<<EOF\n${r.pieces.join('\n')}\nEOF\ninstallers<<EOF\n${r.installers.join('\n')}\nEOF\n`);
+  // Every value written to the step outputs is checked again here, right before it is written: the thread and the
+  // piece names come from the proposal file, and a line break in one could add a second output line (Security c3 on
+  // platform thread 60bac5f2). check() already refuses them; this keeps the write safe on its own.
+  if (!COMMIT_RE.test(String(r.commit)) || !THREAD_RE.test(String(r.thread)) || !r.pieces.every((p) => /^(tunnel|cli|console)=[A-Za-z0-9._+-]{1,48}=[0-9a-f]{64}$/.test(p))) fail('bad proposal values');
+  fs.appendFileSync(process.env.GITHUB_OUTPUT, `commit=${r.commit}\nthread=${r.thread}\nkinds=${r.pieces.map((p) => p.split('=')[0]).join(',')}\npieces<<EOF\n${r.pieces.join('\n')}\nEOF\ninstallers<<EOF\n${r.installers.join('\n')}\nEOF\n`);
   console.log(`✓ a valid proposal for platform commit ${r.commit}: ${r.pieces.map((p) => p.split('=').slice(0, 2).join(' ')).join(', ')}`);
 }
