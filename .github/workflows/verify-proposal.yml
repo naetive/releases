@@ -32,6 +32,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       commit: ${{ steps.read.outputs.commit }}
+      thread: ${{ steps.read.outputs.thread }}
+      kinds: ${{ steps.read.outputs.kinds }}
       pieces: ${{ steps.read.outputs.pieces }}
       installers: ${{ steps.read.outputs.installers }}
     steps:
@@ -50,6 +52,21 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: node .github/verify/read-proposal.mjs
+      # The proposal's own review must approve exactly this commit FOR these pieces (Security c2 on platform thread
+      # 60bac5f2): an approval of one piece at a commit never approves another piece at that commit. Same rules as
+      # release-propose: only naetive.ai, no redirects, a time limit, anything but approved true stops here.
+      - name: Security approved this commit for these pieces
+        env:
+          COMMIT: ${{ steps.read.outputs.commit }}
+          THREAD: ${{ steps.read.outputs.thread }}
+          KINDS: ${{ steps.read.outputs.kinds }}
+        run: |
+          set -euo pipefail
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::bad commit"; exit 1; }
+          [[ "$THREAD" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] || { echo "::error::bad review thread"; exit 1; }
+          [[ "$KINDS" =~ ^(tunnel|cli|console)(,(tunnel|cli|console)){0,2}$ ]] || { echo "::error::bad pieces"; exit 1; }
+          body="$(curl -fsS --proto '=https' --max-time 15 --max-redirs 0 "https://naetive.ai/api/public/release-approval?thread=${THREAD}&commit=${COMMIT}&pieces=${KINDS}")" || { echo "::error::naetive.ai did not answer whether Security approved $COMMIT"; exit 1; }
+          jq -e '.approved == true' <<< "$body" > /dev/null || { echo "::error::Security's review $THREAD does not approve $COMMIT for $KINDS."; exit 1; }
 
   fetch:
     name: Fetch the platform commit
