@@ -1,16 +1,16 @@
 {
   "v": 1,
-  "serial": 39,
+  "serial": 40,
   "rollback": false,
-  "platform_commit": "b6368729afb37554250ed5e10adce4c8a20af5b1",
+  "platform_commit": "7519cbe602a2e04e6a8f40f7a18a3dd80d33fad2",
   "pieces": {
     "tunnel": {
       "version": "2026.11.26-2f3f2ed7",
       "sha256": "b45610dcef5d922e61be8b45ec39e5c510f045c8f47f2103a7a97e951382c564"
     },
     "cli": {
-      "version": "2026.11.26-aab6c009",
-      "sha256": "f1fc42794691cad27c22bef035fb5affe42dddbd8aea2173e5a638f54ee055f1"
+      "version": "2026.11.28-c1f030b2",
+      "sha256": "21f68c6401af07bb4666b230701dbdc0c7e2698cc07d85817251819f70e0e975"
     },
     "console": {
       "version": "2026.11.27-b3437646",
@@ -19,10 +19,10 @@
   },
   "installers": {
     "install.sh": {
-      "sha256": "93bb95edba597574b55cc7f4c1400993928510470ff9662db8480a32c2edc540"
+      "sha256": "0b3c794081c7e8a12fbd70a4faadd057bdce6cf4e1232f6dd3877f37d59ad1a8"
     },
     "install.ps1": {
-      "sha256": "66dfbc1920b879f32dd43377d0840a0b6b98917e3c4bc19ddf95b903762e0574"
+      "sha256": "8dee2c9f9bf46553d8b5e0556d4b721d3ba2a37dfd6c6b21d1e484ce80dd766e"
     }
   }
 }
